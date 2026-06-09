@@ -1,0 +1,97 @@
+# B2B HVAC Scraper Configuration
+
+target_geos:
+  - Las Vegas, NV
+  - Scottsdale, AZ
+  - Phoenix, AZ
+  - Tucson, AZ
+
+# Service area for geographic filtering
+service_area:
+  primary:
+    - Clark County, NV
+  secondary:
+    - Maricopa County, AZ
+    - Pima County, AZ
+
+sources:
+  csv_seed:
+    enabled: true
+    path: ./data/seed.csv
+  
+  yelp:
+    enabled: true
+    api_key_env: YELP_API_KEY
+    results_per_market: 300
+    category: hvac
+  
+  bbb:
+    enabled: true
+    results_per_market: 100
+    category: heating-air-conditioning
+  
+  angi:
+    enabled: true
+    results_per_market: 200
+    category: hvac-heating-cooling
+  
+  google_places:
+    enabled: false  # Optional - needs PLACES_API_KEY
+    api_key_env: PLACES_API_KEY
+
+# Chain filtering - exclude national brands
+chain_brands:
+  - One Hour Heating
+  - ARS
+  - Goettl
+  - American Home Shield
+  - Precision Air
+  - Aire Serv
+  - Mr. Appliance
+  - Benjamin Franklin Plumbing
+  - Mister Sparky
+  - Service Experts
+  - BELFOR
+  - Restoration 1
+  - Servpro
+  - 1-800-PLUMBER
+  - Rooter Hero
+  - ABC Home & Commercial Services
+  - HomeAdvisor Direct
+  - Angi Leads
+
+# ICP Scoring weights (totals 100)
+scoring:
+  weights:
+    phone: 20
+    email: 30
+    website: 10
+    reviews_high: 15    # 50+ reviews
+    reviews_med: 5      # 10-49 reviews
+    hours: 10
+    service_area: 10
+    chain_penalty: -15
+  
+  # Tier thresholds
+  tiers:
+    A: 60  # Immediate outreach - complete contact info
+    B: 40  # Manual research, then outreach
+    C: 20  # Nurture queue
+    # < 20 = Reject
+
+database:
+  path: ./data/b2b_hvac.db
+
+export:
+  csv_path: ./data/leads.csv
+  fields:
+    - company_name
+    - phone
+    - email
+    - website
+    - city
+    - state
+    - icp_score
+    - tier
+    - source
+    - detected_at
