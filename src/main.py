@@ -1,6 +1,7 @@
-"""Main CLI for B2B HVAC Scraper."""
+"""Main CLI for B2B HVAC Scraper with Hermes scoring webhook integration."""
 import sys
 import yaml
+import httpx
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -10,115 +11,96 @@ from processors.chain_filter import filter_chains
 from processors.icp_scorer import score_and_classify
 from exporters.csv_exporter import CSVExporter
 
-# Load environment variables
+# Webhook URL for Hermes scoring engine
+WEBHOOK_URL = "http://127.0.0.1:5000/webhook/b2b-hvac-router"
+
 load_dotenv()
 
-def load_config() -> dict:
-    """Load configuration from config.yaml."""
-    config_path = Path(__file__).parent.parent / 'config.yaml'
-    with open(config_path) as f:
+def load_config():
+    with open('config.yaml', 'r') as f:
         return yaml.safe_load(f)
 
-def cmd_discover():
-    """Run full discovery across all enabled sources."""
-    print("🚀 Starting B2B HVAC Discovery...")
+def send_to_hermes(lead: dict):
+    """Push qualified lead to Hermes scoring engine webhook."""
+    try:
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "company_name": lead['company_name'],
+            "phone": lead.get('phone'),
+            "email": lead.get('email'),
+            "website": lead.get('website'),
+            "address": lead.get('address'),
+            "icp_score": lead['icp_score'],
+            "tier": lead['tier'],
+            "reviews": lead.get('review_count'),
+            "source": "yelp",
+            "market": lead.get('address', {}).get('city', 'Unknown'),
+        }
+        resp = httpx.post(WEBHOOK_URL, json=payload, headers=headers, timeout=10)
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"⚠️  Webhook failed (scoring engine offline?): {e}")
+        return False
+
+def discover_market():
+    """Run full B2B HVAC discovery with webhook passthrough."""
+    print("🔍 B2B HVAC Scraper - Discover Mode")
     
     config = load_config()
-    db = Database(config['database']['path'])
+    db = Database(config)
+    scrapers = []
     
-    markets = config['target_geos']
-    print(f"📍 Target markets: {', '.join(markets)}")
+    # Yelp scraper
+    yelp_config = config.get('sources', {}).get('yelp', {})
+    if yelp_config.get('enabled', False):
+        try:
+            scrapers.append(YelpAdapter(yelp_config))
+        except Exception as e:
+            print(f"⚠️  Yelp unavailable: {e}")
     
-    # Run adapters
-    all_companies = []
+    hermes_count = 0
     
-    # Yelp
-    yelp = YelpAdapter(config)
-    all_companies.extend(yelp.discover(markets))
+    for scraper in scrapers:
+        print(f"\n📦 Running: {scraper.__class__.__name__}")
+        for lead in scraper.scrape():
+            if not filter_chains(lead, config):
+                continue
+            
+            scored = score_and_classify(lead, config)
+            if scored['tier'] in ['A', 'B']:
+                db.save_and_classify(scored)
+                sent = send_to_hermes(scored)
+                if sent:
+                    hermes_count += 1
+                action = "→ Hermes" if sent else ""
+                print(f"  🎯 {scored['tier']} | {scored['company_name']} {scored['icp_score']}/100 {action}")
     
-    # BBB and Angi adapters would go here
-    # For now, we have working Yelp adapter
-    
-    print(f"\n📊 Total companies discovered: {len(all_companies)}")
-    
-    # Filter chains
-    filtered = filter_chains(all_companies, config)
-    
-    # Score and classify
-    print("🎯 Scoring companies...")
-    scored = []
-    for company in filtered:
-        scored_company = score_and_classify(company, config)
-        scored.append(scored_company)
-        
-        # Insert into database
-        db.insert_company(scored_company)
-    
-    # Show stats
-    stats = db.get_stats()
-    print(f"\n✅ Discovery complete!")
-    print(f"   Total: {stats['total']}")
-    print(f"   Tier A: {stats['by_tier'].get('A', 0)}")
-    print(f"   Tier B: {stats['by_tier'].get('B', 0)}")
-    print(f"   Tier C: {stats['by_tier'].get('C', 0)}")
-    print(f"   Rejected: {stats['by_tier'].get('Reject', 0)}")
-    
-    db.log_activity('discover', f"Found {stats['total']} companies")
-    db.close()
+    print(f"\n✅ Pipeline complete. Hermes signals: {hermes_count}")
 
-def cmd_stats():
-    """Show database statistics."""
-    config = load_config()
-    db = Database(config['database']['path'])
-    
-    stats = db.get_stats()
-    
-    print("\n📊 B2B HVAC Scraper Statistics")
-    print("=" * 50)
-    print(f"Total Companies: {stats['total']}")
-    print(f"\nBy Tier:")
-    for tier, count in sorted(stats['by_tier'].items()):
-        print(f"  {tier}: {count}")
-    print(f"\nBy Source:")
-    for source, count in sorted(stats['by_source'].items()):
-        print(f"  {source}: {count}")
-    print("=" * 50)
-    
-    db.close()
-
-def cmd_export():
+def export_csv():
     """Export leads to CSV."""
+    print("📤 Exporting leads to CSV...")
     config = load_config()
-    db = Database(config['database']['path'])
+    db = Database(config)
     
-    companies = db.get_all_companies()
-    exporter = CSVExporter(config)
-    output_path = exporter.export(companies)
-    
-    print(f"✅ Exported {len(companies)} companies to {output_path}")
-    db.close()
+    leads = db.get_all()
+    csv_path = config.get('output', {}).get('csv_path', 'leads.csv')
+    CSVExporter.export(leads, csv_path)
+    print(f"✅ Exported {len(leads)} leads to {csv_path}")
 
 def main():
-    """Main entry point."""
     if len(sys.argv) < 2:
-        print("Usage: python src/main.py [command]")
-        print("\nCommands:")
-        print("  discover  - Run full discovery across all sources")
-        print("  stats     - Show database statistics")
-        print("  export    - Export leads to CSV")
+        print("Usage: python src/main.py [discover|stats|export]")
         sys.exit(1)
     
-    command = sys.argv[1]
+    cmd = sys.argv[1]
+    commands = {'discover': discover_market, 'export': export_csv}
     
-    if command == 'discover':
-        cmd_discover()
-    elif command == 'stats':
-        cmd_stats()
-    elif command == 'export':
-        cmd_export()
+    if cmd in commands:
+        commands[cmd]()
     else:
-        print(f"Unknown command: {command}")
-        sys.exit(1)
+        print(f"Unknown command: {cmd}")
 
 if __name__ == '__main__':
     main()
