@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from database import Database
 from adapters.yelp import YelpAdapter
 from adapters.bbb import BBBAdapter
+from adapters.angi import AngiAdapter
 from processors.chain_filter import filter_chains
 from processors.icp_scorer import score_and_classify
 from exporters.csv_exporter import CSVExporter
@@ -71,8 +72,16 @@ def _dedup_cross_source(leads: list) -> list:
         else:
             existing_idx = seen_phones[digits]
             existing = result[existing_idx]
-            existing_score = existing.get('bbb_trust_score') or existing.get('review_count', 0)
-            this_score = lead.get('bbb_trust_score') or lead.get('review_count', 0)
+            existing_score = (
+                existing.get('bbb_trust_score')
+                or existing.get('angi_reliability_score')
+                or existing.get('review_count', 0)
+            )
+            this_score = (
+                lead.get('bbb_trust_score')
+                or lead.get('angi_reliability_score')
+                or lead.get('review_count', 0)
+            )
             if this_score > existing_score:
                 result[existing_idx] = lead
 
@@ -105,6 +114,14 @@ def discover_market():
             adapters.append(BBBAdapter(bbb_config))
         except Exception as e:
             print(f"⚠️  BBB unavailable: {e}")
+
+    # Angi (tertiary source — runs after Yelp + BBB)
+    angi_config = config.get('sources', {}).get('angi', {})
+    if angi_config.get('enabled', False):
+        try:
+            adapters.append(AngiAdapter(angi_config))
+        except Exception as e:
+            print(f"⚠️  Angi unavailable: {e}")
 
     # Collect raw leads from all active adapters
     raw_leads = []
