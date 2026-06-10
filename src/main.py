@@ -11,7 +11,6 @@ from processors.chain_filter import filter_chains
 from processors.icp_scorer import score_and_classify
 from exporters.csv_exporter import CSVExporter
 
-# Webhook URL for Hermes scoring engine
 WEBHOOK_URL = "http://127.0.0.1:5000/webhook/b2b-hvac-router"
 
 load_dotenv()
@@ -48,7 +47,8 @@ def discover_market():
     print("🔍 B2B HVAC Scraper - Discover Mode")
     
     config = load_config()
-    db = Database(config)
+    db_path = config.get('database', {}).get('path', './data/b2b_leads.db')
+    db = Database(db_path)
     scrapers = []
     
     # Yelp scraper
@@ -59,11 +59,20 @@ def discover_market():
         except Exception as e:
             print(f"⚠️  Yelp unavailable: {e}")
     
+    # Fallback to stub data
+    if not scrapers:
+        print("📌 No scrapers active, using stub data for testing")
+        scrapers = [None]  # Will trigger stub path
+    
     hermes_count = 0
     
     for scraper in scrapers:
-        print(f"\n📦 Running: {scraper.__class__.__name__}")
-        for lead in scraper.scrape():
+        if scraper is None:
+            leads = get_stub_leads()
+        else:
+            leads = scraper.scrape()
+        
+        for lead in leads:
             if not filter_chains(lead, config):
                 continue
             
@@ -78,12 +87,44 @@ def discover_market():
     
     print(f"\n✅ Pipeline complete. Hermes signals: {hermes_count}")
 
+def get_stub_leads():
+    """Stub data for testing webhook integration."""
+    return [
+        {
+            'company_name': 'Desert Air Solutions',
+            'phone': '(702) 555-0123',
+            'email': 'info@desertair.com',
+            'website': 'https://desertair.com',
+            'address': {'city': 'Las Vegas', 'state': 'NV'},
+            'review_count': 78,
+            'source': 'stub',
+        },
+        {
+            'company_name': 'Cool Breeze HVAC',
+            'phone': '(702) 555-0456',
+            'email': None,
+            'website': None,
+            'address': {'city': 'Las Vegas', 'state': 'NV'},
+            'review_count': 12,
+            'source': 'stub',
+        },
+        {
+            'company_name': 'One Hour Heating & Air Conditioning',
+            'phone': '(702) 555-0999',
+            'email': 'corporate@onehour.com',
+            'website': 'https://onehour.com',
+            'address': {'city': 'Las Vegas', 'state': 'NV'},
+            'review_count': 5000,
+            'source': 'stub',
+        }
+    ]
+
 def export_csv():
     """Export leads to CSV."""
     print("📤 Exporting leads to CSV...")
     config = load_config()
-    db = Database(config)
-    
+    db_path = config.get('database', {}).get('path', './data/b2b_leads.db')
+    db = Database(db_path)
     leads = db.get_all()
     csv_path = config.get('output', {}).get('csv_path', 'leads.csv')
     CSVExporter.export(leads, csv_path)
